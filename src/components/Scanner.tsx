@@ -4,18 +4,16 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   Camera,
   RefreshCw,
-  Sliders,
   Volume2,
   VolumeX,
-  UserCheck,
   AlertCircle,
-  Sparkles,
   FlipHorizontal,
-  Info,
+  CheckCircle2,
+  Scan,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { EnrolledStudent, AttendanceRecord } from '@/types';
-import { detectAllFacesInVideo, findBestMatch, areModelsLoaded } from '@/lib/faceApi';
+import { EnrolledStudent } from '@/types';
+import { detectAllFacesInVideo, findBestMatch, areModelsLoaded, loadModels } from '@/lib/faceApi';
 import { markAttendance } from '@/lib/storage';
 import { playSuccessChime, speakStudentName } from '@/lib/sound';
 
@@ -31,10 +29,9 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
 
   const [cameraActive, setCameraActive] = useState<boolean>(false);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
-  const [threshold, setThreshold] = useState<number>(0.55);
   const [audioFeedback, setAudioFeedback] = useState<boolean>(true);
-  const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [scanStatus, setScanStatus] = useState<string>('Initializing Camera...');
 
   // Recent match for feedback card
   const [lastMatch, setLastMatch] = useState<{
@@ -52,6 +49,8 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
     }
 
     try {
+      await loadModels();
+
       const constraints: MediaStreamConstraints = {
         video: {
           facingMode: facingMode,
@@ -69,6 +68,7 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
         videoRef.current.onloadedmetadata = () => {
           videoRef.current?.play();
           setCameraActive(true);
+          setScanStatus('Ready. Look into the camera.');
         };
       }
     } catch (err: any) {
@@ -115,9 +115,9 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
     const processFrame = async (timestamp: number) => {
       if (!isSubscribed) return;
 
-      // Throttle scan to ~180ms intervals for smooth 60fps UI and efficient CPU usage
+      // Throttle scan to ~140ms intervals for smooth real-time detection
       if (
-        timestamp - lastScanTime > 180 &&
+        timestamp - lastScanTime > 140 &&
         videoRef.current &&
         canvasRef.current &&
         videoRef.current.readyState === 4 &&
@@ -127,7 +127,6 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
         const video = videoRef.current;
         const canvas = canvasRef.current;
 
-        // Match canvas dimensions to video display
         if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
           canvas.width = video.videoWidth;
           canvas.height = video.videoHeight;
@@ -136,53 +135,48 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
         const ctx = canvas.getContext('2d');
         if (ctx) {
           try {
-            setIsProcessing(true);
             const detections = await detectAllFacesInVideo(video);
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+            if (detections.length === 0) {
+              setScanStatus('Scanning for face...');
+            } else {
+              setScanStatus(`Detected ${detections.length} face(s)`);
+            }
+
             for (const det of detections) {
               const { box } = det.detection;
-              const match = findBestMatch(det.descriptor, students, threshold);
+              // High sensitivity matching threshold 0.65
+              const match = findBestMatch(det.descriptor, students, 0.65);
 
               if (match) {
                 // MATCH FOUND: Draw Green HUD Box
                 ctx.strokeStyle = '#10B981';
-                ctx.lineWidth = 3;
+                ctx.lineWidth = 4;
                 ctx.strokeRect(box.x, box.y, box.width, box.height);
-
-                // Corner brackets for high-tech look
-                const cornerLen = 14;
-                ctx.lineWidth = 5;
-                ctx.beginPath();
-                // Top-Left
-                ctx.moveTo(box.x, box.y + cornerLen);
-                ctx.lineTo(box.x, box.y);
-                ctx.lineTo(box.x + cornerLen, box.y);
-                // Top-Right
-                ctx.moveTo(box.x + box.width - cornerLen, box.y);
-                ctx.lineTo(box.x + box.width, box.y);
-                ctx.lineTo(box.x + box.width, box.y + cornerLen);
-                ctx.stroke();
 
                 // Label pill
                 const label = `${match.student.name} (${match.confidence}%)`;
-                ctx.font = 'bold 14px system-ui, sans-serif';
+                ctx.font = 'bold 15px system-ui, sans-serif';
                 const textWidth = ctx.measureText(label).width;
-                
-                ctx.fillStyle = '#10B981';
-                ctx.fillRect(box.x, Math.max(0, box.y - 28), textWidth + 18, 26);
-                
-                ctx.fillStyle = '#FFFFFF';
-                ctx.fillText(label, box.x + 8, Math.max(18, box.y - 9));
 
-                // Process Attendance Mark
-                const result = markAttendance(match.student, match.confidence);
+                ctx.fillStyle = '#10B981';
+                ctx.fillRect(box.x, Math.max(0, box.y - 30), textWidth + 18, 28);
+
+                ctx.fillStyle = '#FFFFFF';
+                ctx.fillText(label, box.x + 8, Math.max(18, box.y - 10));
+
+                // Process Attendance Mark with short 1-minute test cooldown
+                const result = markAttendance(match.student, match.confidence, 1);
                 if (result.recorded) {
                   onAttendanceMarked();
                   setLastMatch({
                     student: match.student,
                     confidence: match.confidence,
-                    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    time: new Date().toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    }),
                     isNew: true,
                   });
 
@@ -191,14 +185,12 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
                     speakStudentName(match.student.name);
                   }
 
-                  // Confetti splash
                   confetti({
-                    particleCount: 35,
-                    spread: 60,
-                    origin: { y: 0.75 },
+                    particleCount: 40,
+                    spread: 70,
+                    origin: { y: 0.7 },
                   });
                 } else if (result.record) {
-                  // Already marked
                   setLastMatch({
                     student: match.student,
                     confidence: match.confidence,
@@ -207,26 +199,24 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
                   });
                 }
               } else {
-                // UNKNOWN / UNREGISTERED: Amber/Red Box
+                // UNREGISTERED: Amber Box
                 ctx.strokeStyle = '#F59E0B';
-                ctx.lineWidth = 2;
+                ctx.lineWidth = 3;
                 ctx.strokeRect(box.x, box.y, box.width, box.height);
 
                 const label = 'Unregistered Face';
-                ctx.font = '12px system-ui, sans-serif';
+                ctx.font = '13px system-ui, sans-serif';
                 const textWidth = ctx.measureText(label).width;
-                
-                ctx.fillStyle = 'rgba(245, 158, 11, 0.85)';
-                ctx.fillRect(box.x, Math.max(0, box.y - 24), textWidth + 14, 22);
-                
+
+                ctx.fillStyle = 'rgba(245, 158, 11, 0.9)';
+                ctx.fillRect(box.x, Math.max(0, box.y - 26), textWidth + 14, 24);
+
                 ctx.fillStyle = '#000000';
-                ctx.fillText(label, box.x + 6, Math.max(16, box.y - 8));
+                ctx.fillText(label, box.x + 6, Math.max(16, box.y - 9));
               }
             }
           } catch (scanErr) {
             console.error('Frame scan error:', scanErr);
-          } finally {
-            setIsProcessing(false);
           }
         }
       }
@@ -240,14 +230,14 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
       isSubscribed = false;
       cancelAnimationFrame(animationFrameId);
     };
-  }, [students, threshold, audioFeedback, onAttendanceMarked]);
+  }, [students, audioFeedback, onAttendanceMarked]);
 
   return (
     <div className="w-full max-w-4xl mx-auto space-y-4">
       {/* Top Banner & Control Bar */}
-      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3 shadow-xl">
+      <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-4 flex flex-wrap items-center justify-between gap-3 shadow-xl">
         <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
+          <div className="p-2.5 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
             <Camera className="w-5 h-5" />
           </div>
           <div>
@@ -268,7 +258,7 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
           <button
             onClick={toggleFacingMode}
             title="Switch front/back camera"
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs border border-slate-700 transition"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 transition"
           >
             <FlipHorizontal className="w-4 h-4 text-indigo-400" />
             <span className="hidden sm:inline">Flip Camera</span>
@@ -278,7 +268,7 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
           <button
             onClick={() => setAudioFeedback(!audioFeedback)}
             title="Toggle sound announcement"
-            className={`p-2 rounded-xl text-xs border transition ${
+            className={`p-2.5 rounded-xl text-xs border transition ${
               audioFeedback
                 ? 'bg-indigo-600/20 border-indigo-500/30 text-indigo-300'
                 : 'bg-slate-800 border-slate-700 text-slate-400'
@@ -291,7 +281,7 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
           <button
             onClick={startCamera}
             title="Restart Camera"
-            className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition"
+            className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition"
           >
             <RefreshCw className="w-4 h-4" />
           </button>
@@ -315,6 +305,12 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
           </div>
         )}
 
+        {/* Live Status Pill at Top of Camera */}
+        <div className="absolute top-4 z-20 px-3.5 py-1.5 rounded-full bg-slate-900/80 backdrop-blur-md border border-slate-700/80 text-[11px] text-slate-300 flex items-center gap-2 shadow-lg">
+          <Scan className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+          <span>{scanStatus}</span>
+        </div>
+
         {/* Video feed */}
         <video
           ref={videoRef}
@@ -334,27 +330,17 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
           }`}
         />
 
-        {/* Viewfinder Target Reticle */}
-        <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-          <div className="w-64 h-64 sm:w-80 sm:h-80 border border-dashed border-white/20 rounded-3xl relative">
-            <div className="absolute -top-1 -left-1 w-6 h-6 border-t-2 border-l-2 border-indigo-500" />
-            <div className="absolute -top-1 -right-1 w-6 h-6 border-t-2 border-r-2 border-indigo-500" />
-            <div className="absolute -bottom-1 -left-1 w-6 h-6 border-b-2 border-l-2 border-indigo-500" />
-            <div className="absolute -bottom-1 -right-1 w-6 h-6 border-b-2 border-r-2 border-indigo-500" />
-          </div>
-        </div>
-
         {/* Live HUD Floating Notification */}
         {lastMatch && (
-          <div className="absolute bottom-4 left-4 right-4 sm:left-auto sm:right-4 sm:max-w-xs z-20 bg-slate-900/95 backdrop-blur-md border border-emerald-500/40 rounded-2xl p-3 shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-bottom duration-300">
+          <div className="absolute bottom-4 left-4 right-4 sm:left-auto sm:right-4 sm:max-w-xs z-20 bg-slate-900/95 backdrop-blur-md border border-emerald-500/40 rounded-2xl p-3.5 shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-bottom duration-300">
             {lastMatch.student.thumbnail ? (
               <img
                 src={lastMatch.student.thumbnail}
                 alt={lastMatch.student.name}
-                className="w-12 h-12 rounded-xl object-cover border-2 border-emerald-400"
+                className="w-12 h-12 rounded-xl object-cover border-2 border-emerald-400 shrink-0"
               />
             ) : (
-              <div className="w-12 h-12 rounded-xl bg-emerald-500/20 text-emerald-300 flex items-center justify-center font-bold">
+              <div className="w-12 h-12 rounded-xl bg-emerald-500/20 text-emerald-300 flex items-center justify-center font-bold shrink-0">
                 {lastMatch.student.name.charAt(0)}
               </div>
             )}
@@ -368,35 +354,13 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 truncate">Roll: {lastMatch.student.rollNo}</p>
-              <p className="text-[10px] text-emerald-400 font-medium">
-                {lastMatch.isNew ? '✨ Just Marked Present!' : `Already Marked (${lastMatch.time})`}
+              <p className="text-[10px] text-emerald-400 font-medium flex items-center gap-1 mt-0.5">
+                <CheckCircle2 className="w-3 h-3" />
+                <span>{lastMatch.isNew ? 'Marked Present!' : `Present (${lastMatch.time})`}</span>
               </p>
             </div>
           </div>
         )}
-      </div>
-
-      {/* Threshold & Settings Bar */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 text-xs text-slate-400 flex flex-col sm:flex-row items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <Sliders className="w-4 h-4 text-indigo-400" />
-          <span>Match Strictness (Distance Threshold):</span>
-          <span className="font-mono text-white font-semibold">{threshold.toFixed(2)}</span>
-          <span className="text-[10px] text-slate-500">
-            ({threshold < 0.5 ? 'Very Strict' : threshold > 0.6 ? 'Lenient' : 'Balanced'})
-          </span>
-        </div>
-        <div className="w-full sm:w-48">
-          <input
-            type="range"
-            min="0.40"
-            max="0.68"
-            step="0.02"
-            value={threshold}
-            onChange={(e) => setThreshold(parseFloat(e.target.value))}
-            className="w-full accent-indigo-500 cursor-pointer"
-          />
-        </div>
       </div>
     </div>
   );

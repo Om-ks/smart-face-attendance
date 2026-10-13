@@ -112,11 +112,12 @@ export function computeEuclideanDistance(
 
 /**
  * Compares a live face descriptor against all enrolled students
+ * Uses generous threshold 0.65 to ensure high recognition rate in variable camera lighting
  */
 export function findBestMatch(
   liveDescriptor: Float32Array | number[],
   enrolledStudents: EnrolledStudent[],
-  threshold: number = 0.55
+  threshold: number = 0.65
 ): { student: EnrolledStudent; distance: number; confidence: number } | null {
   if (!enrolledStudents || enrolledStudents.length === 0) return null;
 
@@ -137,8 +138,8 @@ export function findBestMatch(
 
   if (bestStudent && minDistance <= threshold) {
     const confidence = Math.max(
-      50,
-      Math.min(99, Math.round((1 - minDistance / (threshold * 1.3)) * 100))
+      60,
+      Math.min(99, Math.round((1 - minDistance / (threshold * 1.25)) * 100))
     );
 
     return {
@@ -152,11 +153,7 @@ export function findBestMatch(
 }
 
 /**
- * Ultra-robust face extraction with 4 progressive detection fallbacks:
- * 1. SSD MobileNet (0.2 minConfidence)
- * 2. TinyFaceDetector (inputSize 512, 0.15 threshold)
- * 3. TinyFaceDetector (inputSize 224, 0.1 threshold)
- * 4. All candidates search -> largest face selection
+ * Ultra-robust face extraction with 4 progressive detection fallbacks
  */
 export async function extractFaceFromImage(
   imageElement: HTMLImageElement | HTMLCanvasElement
@@ -173,9 +170,7 @@ export async function extractFaceFromImage(
     throw new Error('AI models are still loading. Please check your internet connection.');
   }
 
-  // Pre-process and resize image to avoid WebGL tensor crashes on large phone photos
   const canvas = imageElement instanceof HTMLImageElement ? imageToCanvas(imageElement) : imageElement;
-
   let detection: any = null;
 
   // Attempt 1: SSD MobileNet with forgiving confidence
@@ -200,7 +195,7 @@ export async function extractFaceFromImage(
     }
   }
 
-  // Attempt 3: Tiny Face Detector with smaller input size (for distant or small faces)
+  // Attempt 3: Tiny Face Detector with smaller input size
   if (!detection && faceapi.nets.tinyFaceDetector.isLoaded) {
     try {
       detection = await faceapi
@@ -212,7 +207,7 @@ export async function extractFaceFromImage(
     }
   }
 
-  // Attempt 4: Scan all faces and pick the largest one in the frame
+  // Attempt 4: Scan all faces and pick the largest one
   if (!detection && faceapi.nets.tinyFaceDetector.isLoaded) {
     try {
       const allDetections = await faceapi
@@ -263,19 +258,37 @@ export async function extractFaceFromImage(
 }
 
 /**
- * Runs real-time inference on a live video stream element
+ * Real-time video detection tuned for live webcams:
+ * Uses fast TinyFaceDetector (320px, scoreThreshold 0.15) with SSD MobileNet fallback
  */
 export async function detectAllFacesInVideo(videoElement: HTMLVideoElement) {
   const faceapi = await getFaceApi();
   if (!faceapi || !modelsLoaded) return [];
 
-  const detections = await faceapi
-    .detectAllFaces(
-      videoElement,
-      new faceapi.SsdMobilenetv1Options({ minConfidence: 0.4 })
-    )
-    .withFaceLandmarks()
-    .withFaceDescriptors();
+  try {
+    // Primary: TinyFaceDetector (super fast and responsive on mobile/laptop webcams)
+    let detections = await faceapi
+      .detectAllFaces(
+        videoElement,
+        new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.15 })
+      )
+      .withFaceLandmarks()
+      .withFaceDescriptors();
 
-  return detections;
+    // Fallback: SSD MobileNet with relaxed confidence
+    if (!detections || detections.length === 0) {
+      detections = await faceapi
+        .detectAllFaces(
+          videoElement,
+          new faceapi.SsdMobilenetv1Options({ minConfidence: 0.2 })
+        )
+        .withFaceLandmarks()
+        .withFaceDescriptors();
+    }
+
+    return detections || [];
+  } catch (err) {
+    console.warn('Video detection frame error:', err);
+    return [];
+  }
 }
