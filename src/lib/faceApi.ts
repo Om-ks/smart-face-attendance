@@ -14,7 +14,8 @@ export async function getFaceApi() {
 }
 
 /**
- * Loads the face detection, landmark, and recognition weights from /models
+ * Loads the face detection, landmark, and recognition weights.
+ * Tries local /models first, then falls back to jsdelivr CDN.
  */
 export async function loadModels(): Promise<boolean> {
   if (typeof window === 'undefined') return false;
@@ -22,31 +23,40 @@ export async function loadModels(): Promise<boolean> {
   if (modelsLoadingPromise) return modelsLoadingPromise;
 
   modelsLoadingPromise = (async () => {
-    try {
-      const faceapi = await getFaceApi();
-      if (!faceapi) return false;
+    const faceapi = await getFaceApi();
+    if (!faceapi) return false;
 
-      const MODEL_URL = '/models';
+    const sources = [
+      '/models',
+      'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model',
+      'https://raw.githubusercontent.com/vladmandic/face-api/master/model',
+    ];
 
-      // Load SSD MobileNet v1, Landmarks (68 keypoints), and Deep Metric Embedder
-      await Promise.all([
-        faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
-        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
-      ]);
+    for (const src of sources) {
+      try {
+        await Promise.all([
+          faceapi.nets.ssdMobilenetv1.loadFromUri(src),
+          faceapi.nets.faceLandmark68Net.loadFromUri(src),
+          faceapi.nets.faceRecognitionNet.loadFromUri(src),
+        ]);
 
-      modelsLoaded = true;
-      return true;
-    } catch (error) {
-      console.error('Failed to load Face-API neural network models:', error);
-      modelsLoaded = false;
-      return false;
-    } finally {
-      modelsLoadingPromise = null;
+        modelsLoaded = true;
+        return true;
+      } catch (err) {
+        console.warn(`Model load from ${src} failed, trying fallback...`, err);
+      }
     }
+
+    modelsLoaded = false;
+    return false;
   })();
 
-  return modelsLoadingPromise;
+  try {
+    const result = await modelsLoadingPromise;
+    return result;
+  } finally {
+    modelsLoadingPromise = null;
+  }
 }
 
 export function areModelsLoaded(): boolean {

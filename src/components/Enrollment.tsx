@@ -37,7 +37,7 @@ export const Enrollment: React.FC<EnrollmentProps> = ({
   // Form State
   const [name, setName] = useState('');
   const [rollNo, setRollNo] = useState('');
-  const [department, setDepartment] = useState('Computer Engineering (Sem V)');
+  const [department, setDepartment] = useState('');
 
   // Input Mode: Camera vs Gallery
   const [inputMode, setInputMode] = useState<'camera' | 'gallery'>('camera');
@@ -315,7 +315,7 @@ export const Enrollment: React.FC<EnrollmentProps> = ({
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Rudra Sameer Rane"
+                placeholder="Enter full name (e.g. Alex Morgan)"
                 className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700/80 text-white text-xs focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition"
               />
             </div>
@@ -328,7 +328,7 @@ export const Enrollment: React.FC<EnrollmentProps> = ({
                 type="text"
                 value={rollNo}
                 onChange={(e) => setRollNo(e.target.value)}
-                placeholder="e.g. 230811"
+                placeholder="Enter Roll / ID (e.g. 101)"
                 className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700/80 text-white text-xs focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition"
               />
             </div>
@@ -341,7 +341,7 @@ export const Enrollment: React.FC<EnrollmentProps> = ({
                 type="text"
                 value={department}
                 onChange={(e) => setDepartment(e.target.value)}
-                placeholder="e.g. Computer Engineering Sem V"
+                placeholder="e.g. Computer Science"
                 className="w-full px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700/80 text-white text-xs focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition"
               />
             </div>
