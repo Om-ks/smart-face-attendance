@@ -15,7 +15,7 @@ export async function getFaceApi() {
 
 /**
  * Loads the face detection, landmark, and recognition weights.
- * Tries local /models first, then falls back to jsdelivr CDN.
+ * MUST include trailing slash for correct relative shard (.bin) resolution!
  */
 export async function loadModels(): Promise<boolean> {
   if (typeof window === 'undefined') return false;
@@ -26,24 +26,28 @@ export async function loadModels(): Promise<boolean> {
     const faceapi = await getFaceApi();
     if (!faceapi) return false;
 
+    // Notice trailing slashes are mandatory for relative .bin shard resolution
     const sources = [
-      '/models',
-      'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model',
-      'https://raw.githubusercontent.com/vladmandic/face-api/master/model',
+      'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/',
+      '/models/',
+      'https://raw.githubusercontent.com/vladmandic/face-api/master/model/',
     ];
 
     for (const src of sources) {
       try {
+        console.log(`Loading Face-API models from: ${src}`);
         await Promise.all([
           faceapi.nets.ssdMobilenetv1.loadFromUri(src),
+          faceapi.nets.tinyFaceDetector.loadFromUri(src),
           faceapi.nets.faceLandmark68Net.loadFromUri(src),
           faceapi.nets.faceRecognitionNet.loadFromUri(src),
         ]);
 
         modelsLoaded = true;
+        console.log(`Successfully loaded Face-API models from: ${src}`);
         return true;
       } catch (err) {
-        console.warn(`Model load from ${src} failed, trying fallback...`, err);
+        console.warn(`Model load from ${src} failed, trying next mirror...`, err);
       }
     }
 
@@ -61,6 +65,34 @@ export async function loadModels(): Promise<boolean> {
 
 export function areModelsLoaded(): boolean {
   return modelsLoaded;
+}
+
+/**
+ * Normalizes and resizes any image to an HTMLCanvasElement (max dimension 800px)
+ * to prevent GPU/WebGL memory overflow and handle large phone camera photos
+ */
+export function imageToCanvas(img: HTMLImageElement, maxDim = 800): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  let width = img.naturalWidth || img.width || 640;
+  let height = img.naturalHeight || img.height || 480;
+
+  if (width > maxDim || height > maxDim) {
+    if (width > height) {
+      height = Math.round((height * maxDim) / width);
+      width = maxDim;
+    } else {
+      width = Math.round((width * maxDim) / height);
+      height = maxDim;
+    }
+  }
+
+  canvas.width = Math.max(1, width);
+  canvas.height = Math.max(1, height);
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  }
+  return canvas;
 }
 
 /**
@@ -120,7 +152,11 @@ export function findBestMatch(
 }
 
 /**
- * Runs inference on a single image element (for enrollment preview)
+ * Ultra-robust face extraction with 4 progressive detection fallbacks:
+ * 1. SSD MobileNet (0.2 minConfidence)
+ * 2. TinyFaceDetector (inputSize 512, 0.15 threshold)
+ * 3. TinyFaceDetector (inputSize 224, 0.1 threshold)
+ * 4. All candidates search -> largest face selection
  */
 export async function extractFaceFromImage(
   imageElement: HTMLImageElement | HTMLCanvasElement
@@ -132,34 +168,92 @@ export async function extractFaceFromImage(
   const faceapi = await getFaceApi();
   if (!faceapi) return null;
 
-  await loadModels();
+  const ready = await loadModels();
+  if (!ready) {
+    throw new Error('AI models are still loading. Please check your internet connection.');
+  }
 
-  const detection = await faceapi
-    .detectSingleFace(imageElement, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 }))
-    .withFaceLandmarks()
-    .withFaceDescriptor();
+  // Pre-process and resize image to avoid WebGL tensor crashes on large phone photos
+  const canvas = imageElement instanceof HTMLImageElement ? imageToCanvas(imageElement) : imageElement;
+
+  let detection: any = null;
+
+  // Attempt 1: SSD MobileNet with forgiving confidence
+  try {
+    detection = await faceapi
+      .detectSingleFace(canvas, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.2 }))
+      .withFaceLandmarks()
+      .withFaceDescriptor();
+  } catch (e) {
+    console.warn('SSD MobileNet pass failed, falling back to TinyFaceDetector...', e);
+  }
+
+  // Attempt 2: Tiny Face Detector (512px)
+  if (!detection && faceapi.nets.tinyFaceDetector.isLoaded) {
+    try {
+      detection = await faceapi
+        .detectSingleFace(canvas, new faceapi.TinyFaceDetectorOptions({ inputSize: 512, scoreThreshold: 0.15 }))
+        .withFaceLandmarks()
+        .withFaceDescriptor();
+    } catch (e) {
+      console.warn('TinyFace pass 1 failed...', e);
+    }
+  }
+
+  // Attempt 3: Tiny Face Detector with smaller input size (for distant or small faces)
+  if (!detection && faceapi.nets.tinyFaceDetector.isLoaded) {
+    try {
+      detection = await faceapi
+        .detectSingleFace(canvas, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.1 }))
+        .withFaceLandmarks()
+        .withFaceDescriptor();
+    } catch (e) {
+      console.warn('TinyFace pass 2 failed...', e);
+    }
+  }
+
+  // Attempt 4: Scan all faces and pick the largest one in the frame
+  if (!detection && faceapi.nets.tinyFaceDetector.isLoaded) {
+    try {
+      const allDetections = await faceapi
+        .detectAllFaces(canvas, new faceapi.TinyFaceDetectorOptions({ scoreThreshold: 0.1 }))
+        .withFaceLandmarks()
+        .withFaceDescriptors();
+
+      if (allDetections && allDetections.length > 0) {
+        allDetections.sort(
+          (a: any, b: any) =>
+            b.detection.box.width * b.detection.box.height - a.detection.box.width * a.detection.box.height
+        );
+        detection = allDetections[0];
+      }
+    } catch (e) {
+      console.warn('Fallback multi-face search failed...', e);
+    }
+  }
 
   if (!detection) return null;
 
+  // Crop square avatar thumbnail
   const { x, y, width, height } = detection.detection.box;
-  const canvas = document.createElement('canvas');
-  const size = 160;
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
+  const thumbCanvas = document.createElement('canvas');
+  const size = 180;
+  thumbCanvas.width = size;
+  thumbCanvas.height = size;
+  const ctx = thumbCanvas.getContext('2d');
 
   if (ctx) {
-    const padX = width * 0.15;
-    const padY = height * 0.15;
+    const padX = width * 0.18;
+    const padY = height * 0.18;
     const srcX = Math.max(0, x - padX);
     const srcY = Math.max(0, y - padY);
-    const srcW = width + padX * 2;
-    const srcH = height + padY * 2;
+    const srcW = Math.min(canvas.width - srcX, width + padX * 2);
+    const srcH = Math.min(canvas.height - srcY, height + padY * 2);
 
-    ctx.drawImage(imageElement, srcX, srcY, srcW, srcH, 0, 0, size, size);
+    ctx.drawImage(canvas, srcX, srcY, srcW, srcH, 0, 0, size, size);
   }
 
-  const thumbnail = canvas.toDataURL('image/jpeg', 0.85);
+  const thumbnail = thumbCanvas.toDataURL('image/jpeg', 0.9);
 
   return {
     descriptor: Array.from(detection.descriptor),
@@ -178,7 +272,7 @@ export async function detectAllFacesInVideo(videoElement: HTMLVideoElement) {
   const detections = await faceapi
     .detectAllFaces(
       videoElement,
-      new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 })
+      new faceapi.SsdMobilenetv1Options({ minConfidence: 0.4 })
     )
     .withFaceLandmarks()
     .withFaceDescriptors();
