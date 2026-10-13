@@ -1,36 +1,83 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# SmartFace AI: Edge Biometric Face Attendance System
 
-## Getting Started
+A modern, production-grade Machine Learning web application for real-time facial recognition and attendance management. Built with **Next.js**, **Tailwind CSS**, and **TensorFlow / Face-API**, running **100% client-side Edge AI** in the browser and ready for **1-click Vercel deployment**.
 
-First, run the development server:
+---
+
+## 🌟 Key Features
+
+1. **Dual Enrollment Modes:**
+   - **Live Webcam Capture:** Snap photos directly using laptop or mobile phone cameras (supports front and back camera switching).
+   - **Gallery / File Upload:** Upload pictures from your photo library or computer files (`.jpg`, `.png`, `.webp`).
+   - **Multi-Sample Angles:** Capture 1 to 3 face photos (Front, Left, Right) to achieve >98% recognition accuracy.
+
+2. **Real-Time Live Scanner:**
+   - 30–60 FPS in-browser facial detection and identification.
+   - Dynamic HUD bounding box: Displays **Student Name** and **Match Confidence %** in real-time.
+   - Intelligent anti-duplicate cooldown: Prevents spamming multiple records for the same student within a session.
+   - Audio chime and speech synthesis announcement when attendance is marked.
+
+3. **Student Directory & Portable Backups:**
+   - Searchable directory of all registered students with profile pictures and roll numbers.
+   - **Backup to JSON:** Download the biometric database as a portable JSON file.
+   - **Restore from JSON:** Transfer registered profiles between laptops and mobile phones in 1 click.
+
+4. **Attendance Audit Sheet & CSV Export:**
+   - Real-time statistics: Total Registered, Present Today, Absent, and Turnout Rate %.
+   - **Export to CSV:** 1-click download of an official `.csv` attendance report for Excel or Google Sheets.
+
+---
+
+## 🧠 Machine Learning Architecture (For Viva Defense)
+
+| Stage | Algorithm / Model | Output |
+| :--- | :--- | :--- |
+| **1. Face Detection** | Single Shot MultiBox Detector (SSD MobileNet v1) | Bounding Box `[x, y, w, h]` |
+| **2. Landmark Alignment** | 68-Point Facial Keypoint Predictor | Straightened & normalized face |
+| **3. Feature Extraction** | Deep ResNet-34 Feature Embedder | **128-Dimensional Vector** $\vec{v} \in \mathbb{R}^{128}$ |
+| **4. Classification / Matching** | Euclidean Distance ($L_2$ norm) with threshold $\tau \le 0.55$ | Verified Student + Confidence Score |
+
+### Mathematical Formula:
+$$d(\vec{u}, \vec{v}) = \sqrt{\sum_{i=1}^{128} (u_i - v_i)^2}$$
+
+* If $d(\vec{u}, \vec{v}) \le 0.55$: Match confirmed.
+* Confidence Score:
+  $$\text{Confidence (\%)} = \max\left(50, \min\left(99, \text{round}\left(\left(1 - \frac{d}{0.55 \times 1.3}\right) \times 100\right)\right)\right)$$
+
+---
+
+## 🚀 How to Run Locally
 
 ```bash
+# 1. Navigate to project directory
+cd smart-face-attendance
+
+# 2. Run the development server
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## 🌐 How to Deploy to Vercel (Live Website on Any Mobile/Device)
 
-## Learn More
+### Step 1: Push to GitHub
+```bash
+git add .
+git commit -m "Initial commit of SmartFace AI project"
+# Create a repository on GitHub (e.g. smart-face-attendance)
+git remote add origin https://github.com/<your-username>/smart-face-attendance.git
+git branch -M main
+git push -u origin main
+```
 
-To learn more about Next.js, take a look at the following resources:
+### Step 2: Deploy on Vercel
+1. Go to [vercel.com](https://vercel.com) and log in with your GitHub account.
+2. Click **"Add New..."** $\rightarrow$ **"Project"**.
+3. Select your `smart-face-attendance` repository and click **"Import"**.
+4. Leave all default settings as they are (Framework: Next.js) and click **"Deploy"**.
+5. Within 1 minute, you will receive your live URL:
+   👉 `https://smart-face-attendance.vercel.app`
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Open that link on **any phone, tablet, or laptop**, allow camera access, and test it live!
