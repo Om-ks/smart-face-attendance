@@ -13,13 +13,25 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { EnrolledStudent } from '@/types';
-import { detectAllFacesInVideo, findBestMatch, areModelsLoaded, loadModels } from '@/lib/faceApi';
+import {
+  detectAllFacesInVideo,
+  findBestMatch,
+  computeEuclideanDistance,
+  areModelsLoaded,
+  loadModels,
+} from '@/lib/faceApi';
 import { markAttendance } from '@/lib/storage';
 import { playSuccessChime, speakStudentName } from '@/lib/sound';
 
 interface ScannerProps {
   students: EnrolledStudent[];
   onAttendanceMarked: () => void;
+}
+
+interface ActiveIdentity {
+  student: EnrolledStudent;
+  confidence: number;
+  lastSeen: number;
 }
 
 export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }) => {
@@ -33,7 +45,13 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [scanStatus, setScanStatus] = useState<string>('Initializing Camera...');
 
-  // Recent match for feedback card
+  // Track already notified IDs in this current session so sound/confetti only fire once
+  const notifiedStudentIds = useRef<Set<string>>(new Set());
+
+  // Temporal smoothing lock: holds recognized identity for 1.2s to prevent frame-by-frame flicker
+  const smoothedIdentityRef = useRef<ActiveIdentity | null>(null);
+
+  // Recent match for HUD notification banner
   const [lastMatch, setLastMatch] = useState<{
     student: EnrolledStudent;
     confidence: number;
@@ -68,7 +86,7 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
         videoRef.current.onloadedmetadata = () => {
           videoRef.current?.play();
           setCameraActive(true);
-          setScanStatus('Ready. Look into the camera.');
+          setScanStatus('Ready. Look into camera to mark attendance.');
         };
       }
     } catch (err: any) {
@@ -94,7 +112,6 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
     setCameraActive(false);
   }, []);
 
-  // Toggle Camera (Front / Back)
   const toggleFacingMode = () => {
     setFacingMode((prev) => (prev === 'user' ? 'environment' : 'user'));
   };
@@ -106,7 +123,7 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
     };
   }, [startCamera, stopCamera]);
 
-  // Real-Time ML Face Detection & Recognition Loop
+  // Real-Time ML Face Detection Loop with Smoothing
   useEffect(() => {
     let animationFrameId: number;
     let isSubscribed = true;
@@ -115,9 +132,9 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
     const processFrame = async (timestamp: number) => {
       if (!isSubscribed) return;
 
-      // Throttle scan to ~140ms intervals for smooth real-time detection
+      // Throttle scan to ~150ms for smooth 60fps rendering without CPU heating
       if (
-        timestamp - lastScanTime > 140 &&
+        timestamp - lastScanTime > 150 &&
         videoRef.current &&
         canvasRef.current &&
         videoRef.current.readyState === 4 &&
@@ -138,26 +155,78 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
             const detections = await detectAllFacesInVideo(video);
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+            const now = Date.now();
+
             if (detections.length === 0) {
+              // If no face seen for 1.2s, release smoothed identity
+              if (
+                smoothedIdentityRef.current &&
+                now - smoothedIdentityRef.current.lastSeen > 1200
+              ) {
+                smoothedIdentityRef.current = null;
+              }
               setScanStatus('Scanning for face...');
             } else {
-              setScanStatus(`Detected ${detections.length} face(s)`);
+              setScanStatus(`Face in frame (Tracking...)`);
             }
 
             for (const det of detections) {
               const { box } = det.detection;
-              // High sensitivity matching threshold 0.65
-              const match = findBestMatch(det.descriptor, students, 0.65);
+
+              // 1. Check primary match
+              let match = findBestMatch(det.descriptor, students, 0.65);
+
+              // 2. Hysteresis Smoothing: If recently recognized, keep the identity locked
+              // even if distance momentarily blips up to 0.72 due to speech/tilt
+              if (
+                !match &&
+                smoothedIdentityRef.current &&
+                now - smoothedIdentityRef.current.lastSeen < 1200
+              ) {
+                const heldStudent = smoothedIdentityRef.current.student;
+                if (heldStudent.descriptors && heldStudent.descriptors.length > 0) {
+                  let minHysteresisDist = Infinity;
+                  for (const desc of heldStudent.descriptors) {
+                    const d = computeEuclideanDistance(det.descriptor, desc);
+                    if (d < minHysteresisDist) minHysteresisDist = d;
+                  }
+                  if (minHysteresisDist <= 0.72) {
+                    match = {
+                      student: heldStudent,
+                      distance: minHysteresisDist,
+                      confidence: smoothedIdentityRef.current.confidence,
+                    };
+                  }
+                }
+              }
 
               if (match) {
+                // Update smoothed memory
+                smoothedIdentityRef.current = {
+                  student: match.student,
+                  confidence: match.confidence,
+                  lastSeen: now,
+                };
+
                 // MATCH FOUND: Draw Green HUD Box
                 ctx.strokeStyle = '#10B981';
                 ctx.lineWidth = 4;
                 ctx.strokeRect(box.x, box.y, box.width, box.height);
 
-                // Label pill
-                const label = `${match.student.name} (${match.confidence}%)`;
-                ctx.font = 'bold 15px system-ui, sans-serif';
+                // High-tech corner brackets
+                const cornerLen = 14;
+                ctx.beginPath();
+                ctx.moveTo(box.x, box.y + cornerLen);
+                ctx.lineTo(box.x, box.y);
+                ctx.lineTo(box.x + cornerLen, box.y);
+                ctx.moveTo(box.x + box.width - cornerLen, box.y);
+                ctx.lineTo(box.x + box.width, box.y);
+                ctx.lineTo(box.x + box.width, box.y + cornerLen);
+                ctx.stroke();
+
+                // Pill label
+                const label = `${match.student.name} • ${match.confidence}% Match`;
+                ctx.font = 'bold 14px system-ui, sans-serif';
                 const textWidth = ctx.measureText(label).width;
 
                 ctx.fillStyle = '#10B981';
@@ -166,10 +235,14 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
                 ctx.fillStyle = '#FFFFFF';
                 ctx.fillText(label, box.x + 8, Math.max(18, box.y - 10));
 
-                // Process Attendance Mark with short 1-minute test cooldown
-                const result = markAttendance(match.student, match.confidence, 1);
+                // Process Attendance Mark with Strict Daily Deduplication
+                const result = markAttendance(match.student, match.confidence);
+
                 if (result.recorded) {
+                  // NEW RECORD ADDED FOR TODAY
                   onAttendanceMarked();
+                  notifiedStudentIds.current.add(match.student.id);
+
                   setLastMatch({
                     student: match.student,
                     confidence: match.confidence,
@@ -186,11 +259,12 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
                   }
 
                   confetti({
-                    particleCount: 40,
-                    spread: 70,
+                    particleCount: 35,
+                    spread: 60,
                     origin: { y: 0.7 },
                   });
-                } else if (result.record) {
+                } else if (result.alreadyMarked && result.record) {
+                  // ALREADY MARKED TODAY (DO NOT DUPLICATE IN ATTENDANCE SHEET)
                   setLastMatch({
                     student: match.student,
                     confidence: match.confidence,
@@ -356,7 +430,11 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
               <p className="text-[11px] text-slate-400 truncate">Roll: {lastMatch.student.rollNo}</p>
               <p className="text-[10px] text-emerald-400 font-medium flex items-center gap-1 mt-0.5">
                 <CheckCircle2 className="w-3 h-3" />
-                <span>{lastMatch.isNew ? 'Marked Present!' : `Present (${lastMatch.time})`}</span>
+                <span>
+                  {lastMatch.isNew
+                    ? '🎉 Just Marked Present!'
+                    : `Marked Present Today (${lastMatch.time})`}
+                </span>
               </p>
             </div>
           </div>

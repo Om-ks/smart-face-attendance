@@ -20,14 +20,16 @@ export function saveEnrolledStudent(student: EnrolledStudent): boolean {
   if (typeof window === 'undefined') return false;
   try {
     const current = getEnrolledStudents();
-    const existingIndex = current.findIndex((s) => s.id === student.id || s.rollNo.toLowerCase() === student.rollNo.toLowerCase());
-    
+    const existingIndex = current.findIndex(
+      (s) => s.id === student.id || s.rollNo.toLowerCase() === student.rollNo.toLowerCase()
+    );
+
     if (existingIndex >= 0) {
       current[existingIndex] = student;
     } else {
       current.unshift(student);
     }
-    
+
     localStorage.setItem(STUDENTS_KEY, JSON.stringify(current));
     return true;
   } catch (err) {
@@ -66,13 +68,16 @@ export function getAttendanceRecords(): AttendanceRecord[] {
   }
 }
 
+/**
+ * Marks attendance with strict Daily Uniqueness.
+ * A student can ONLY be added once per calendar day.
+ */
 export function markAttendance(
   student: EnrolledStudent,
-  confidence: number,
-  cooldownMinutes: number = 30
-): { recorded: boolean; record: AttendanceRecord | null; message: string } {
+  confidence: number
+): { recorded: boolean; record: AttendanceRecord | null; alreadyMarked: boolean; message: string } {
   if (typeof window === 'undefined') {
-    return { recorded: false, record: null, message: 'Window not loaded' };
+    return { recorded: false, record: null, alreadyMarked: false, message: 'Window not loaded' };
   }
 
   try {
@@ -84,31 +89,37 @@ export function markAttendance(
       year: 'numeric',
     });
 
-    // Check if student was marked recently within cooldown period
-    const recent = records.find((r) => {
-      if (r.studentId !== student.id) return false;
-      const recordTime = new Date(r.timestamp).getTime();
-      const diffMinutes = (now.getTime() - recordTime) / (1000 * 60);
-      return diffMinutes < cooldownMinutes;
-    });
+    // 1. Strict Daily Check: Prevent any duplicate row for same student on same calendar date
+    const existingToday = records.find(
+      (r) =>
+        (r.studentId === student.id || r.rollNo.toUpperCase() === student.rollNo.toUpperCase()) &&
+        r.formattedDate === todayDateStr
+    );
 
-    if (recent) {
+    if (existingToday) {
       return {
         recorded: false,
-        record: recent,
-        message: `Already marked at ${recent.formattedTime}`,
+        record: existingToday,
+        alreadyMarked: true,
+        message: `Already marked Present today at ${existingToday.formattedTime}`,
       };
     }
 
+    // 2. Create single new attendance record
     const newRecord: AttendanceRecord = {
       id: 'att_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
       studentId: student.id,
       name: student.name,
       rollNo: student.rollNo,
-      department: student.department,
+      department: student.department || 'General',
       thumbnail: student.thumbnail,
       timestamp: now.toISOString(),
-      formattedTime: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }),
+      formattedTime: now.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: true,
+      }),
       formattedDate: todayDateStr,
       confidence: Math.round(confidence),
       status: 'Present',
@@ -120,11 +131,12 @@ export function markAttendance(
     return {
       recorded: true,
       record: newRecord,
+      alreadyMarked: false,
       message: `Marked Present with ${Math.round(confidence)}% confidence`,
     };
   } catch (err) {
     console.error('Failed to mark attendance:', err);
-    return { recorded: false, record: null, message: 'Storage error' };
+    return { recorded: false, record: null, alreadyMarked: false, message: 'Storage error' };
   }
 }
 
@@ -138,15 +150,21 @@ export function clearAttendanceRecords(): void {
 export function exportDatabaseToJSON(): string {
   const students = getEnrolledStudents();
   const attendance = getAttendanceRecords();
-  return JSON.stringify({
-    version: '1.0',
-    exportedAt: new Date().toISOString(),
-    students,
-    attendance,
-  }, null, 2);
+  return JSON.stringify(
+    {
+      version: '1.0',
+      exportedAt: new Date().toISOString(),
+      students,
+      attendance,
+    },
+    null,
+    2
+  );
 }
 
-export function importDatabaseFromJSON(jsonString: string): { success: boolean; count: number; error?: string } {
+export function importDatabaseFromJSON(
+  jsonString: string
+): { success: boolean; count: number; error?: string } {
   try {
     const data = JSON.parse(jsonString);
     if (!data.students || !Array.isArray(data.students)) {
@@ -155,7 +173,7 @@ export function importDatabaseFromJSON(jsonString: string): { success: boolean; 
 
     const existing = getEnrolledStudents();
     const existingIds = new Set(existing.map((s) => s.id));
-    
+
     let addedCount = 0;
     for (const student of data.students) {
       if (!existingIds.has(student.id)) {
@@ -188,7 +206,16 @@ export function exportAttendanceToCSV(): void {
   const records = getAttendanceRecords();
   if (records.length === 0) return;
 
-  const headers = ['Record ID', 'Roll Number', 'Student Name', 'Department', 'Date', 'Time', 'Match Confidence (%)', 'Status'];
+  const headers = [
+    'Record ID',
+    'Roll Number',
+    'Student Name',
+    'Department',
+    'Date',
+    'Time',
+    'Match Confidence (%)',
+    'Status',
+  ];
   const rows = records.map((r) => [
     `"${r.id}"`,
     `"${r.rollNo}"`,
@@ -200,7 +227,8 @@ export function exportAttendanceToCSV(): void {
     `"${r.status}"`,
   ]);
 
-  const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
+  const csvContent =
+    'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
   const encodedUri = encodeURI(csvContent);
   const link = document.createElement('a');
   link.setAttribute('href', encodedUri);
