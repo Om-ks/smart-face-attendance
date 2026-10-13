@@ -48,15 +48,23 @@ export default function Home() {
   const [students, setStudents] = useState<EnrolledStudent[]>([]);
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
 
-  // Load storage data
-  const refreshData = useCallback(() => {
+  // Granular data loaders
+  const refreshStudents = useCallback(() => {
+    setStudents(getEnrolledStudents());
+  }, []);
+
+  const refreshAttendance = useCallback(() => {
+    setAttendance(getAttendanceRecords());
+  }, []);
+
+  const refreshAll = useCallback(() => {
     setStudents(getEnrolledStudents());
     setAttendance(getAttendanceRecords());
   }, []);
 
   // Initialize Models and Storage
   useEffect(() => {
-    refreshData();
+    refreshAll();
 
     async function init() {
       try {
@@ -72,7 +80,7 @@ export default function Home() {
     }
 
     init();
-  }, [refreshData]);
+  }, [refreshAll]);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col selection:bg-indigo-500 selection:text-white pb-20 md:pb-10">
@@ -109,12 +117,12 @@ export default function Home() {
 
         {/* Tab Views */}
         {activeTab === 'scanner' && (
-          <Scanner students={students} onAttendanceMarked={refreshData} />
+          <Scanner students={students} onAttendanceMarked={refreshAttendance} />
         )}
 
         {activeTab === 'enroll' && (
           <Enrollment
-            onStudentEnrolled={refreshData}
+            onStudentEnrolled={refreshAll}
             onNavigateToScanner={() => setActiveTab('scanner')}
           />
         )}
@@ -122,7 +130,7 @@ export default function Home() {
         {activeTab === 'students' && (
           <StudentsList
             students={students}
-            onStudentsUpdated={refreshData}
+            onStudentsUpdated={refreshAll}
             onNavigateToEnroll={() => setActiveTab('enroll')}
           />
         )}
@@ -131,7 +139,7 @@ export default function Home() {
           <AttendanceSheet
             records={attendance}
             students={students}
-            onRecordsUpdated={refreshData}
+            onRecordsUpdated={refreshAttendance}
           />
         )}
       </main>
