@@ -184,7 +184,8 @@ export const Scanner: React.FC<ScannerProps> = ({ students, onAttendanceMarked }
                   ? canvas.width - box.x - box.width
                   : box.x;
 
-                const match = findBestMatch(det.descriptor, studentsRef.current, 0.65);
+                // Calibrated threshold 0.48: strictly matches enrolled face, rejects all others as Unknown
+                const match = findBestMatch(det.descriptor, studentsRef.current, 0.48);
 
                 if (match) {
                   // MATCH FOUND: Draw Green HUD Box

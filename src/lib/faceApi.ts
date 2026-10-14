@@ -111,13 +111,13 @@ export function computeEuclideanDistance(
 }
 
 /**
- * Compares a live face descriptor against all enrolled students
- * Uses generous threshold 0.65 to ensure high recognition rate in variable camera lighting
+ * Compares a live face descriptor against all enrolled students.
+ * Uses a strict, calibrated threshold (0.48) to prevent false positives and wrong identifications.
  */
 export function findBestMatch(
   liveDescriptor: Float32Array | number[],
   enrolledStudents: EnrolledStudent[],
-  threshold: number = 0.65
+  threshold: number = 0.48
 ): { student: EnrolledStudent; distance: number; confidence: number } | null {
   if (!enrolledStudents || enrolledStudents.length === 0) return null;
 
@@ -136,10 +136,11 @@ export function findBestMatch(
     }
   }
 
+  // Strictly require distance <= threshold (0.48) to reject unknown faces
   if (bestStudent && minDistance <= threshold) {
     const confidence = Math.max(
-      60,
-      Math.min(99, Math.round((1 - minDistance / (threshold * 1.25)) * 100))
+      65,
+      Math.min(99, Math.round((1 - minDistance / (threshold * 1.3)) * 100))
     );
 
     return {
@@ -266,11 +267,11 @@ export async function detectAllFacesInVideo(videoElement: HTMLVideoElement) {
   if (!faceapi || !modelsLoaded) return [];
 
   try {
-    // Primary: TinyFaceDetector (super fast and responsive on mobile/laptop webcams)
+    // Primary: TinyFaceDetector with balanced sensitivity to eliminate false object detections
     let detections = await faceapi
       .detectAllFaces(
         videoElement,
-        new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.15 })
+        new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.35 })
       )
       .withFaceLandmarks()
       .withFaceDescriptors();
